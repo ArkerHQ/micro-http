@@ -440,7 +440,31 @@ impl HttpServer {
                     }
                 } else if e.event_set().contains(epoll::EventSet::OUT) {
                     // We have bytes to write on this connection.
-                    client_connection.write()?;
+                    //
+                    // Disarm-on-spurious-OUT (arker fork, 2026-05-01):
+                    // if write() returns ConnectionError::InvalidWrite, the
+                    // connection's response queue is empty but EPOLLOUT is
+                    // still armed (level-triggered re-fire after a previous
+                    // write fully drained, before the AwaitingIncoming →
+                    // epoll_mod(IN) transition completed). Without catching
+                    // it here, `write()?` bubbles via `?`, aborting the
+                    // entire requests() for-loop — every event for OTHER
+                    // connections in the same epoll_wait batch is dropped,
+                    // and the next epoll_wait returns the same stale OUT
+                    // first, spinning at full CPU. Empirical: arker N=100
+                    // ubuntu-full-32 bench, each FC spammed ~280 K
+                    // "Invalid write attempt" / sec for its entire 3.6 s
+                    // lifetime (1.0 M total per FC), starving fc_api thread.
+                    // Fix: catch InvalidWrite, mark the connection
+                    // AwaitingIncoming so the existing epoll_mod below
+                    // disarms OUT, then continue with the rest of the
+                    // batch's events.
+                    match client_connection.write() {
+                        Err(ServerError::ConnectionError(ConnectionError::InvalidWrite)) => {
+                            client_connection.state = ClientConnectionState::AwaitingIncoming;
+                        }
+                        other => other?,
+                    }
                     // If the connection was outgoing before we tried to write the responses
                     // and we don't have any more responses to write, we change the `epoll`
                     // event set to notify us when we have bytes to read from the stream.
