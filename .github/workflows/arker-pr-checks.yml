@@ -1,0 +1,26 @@
+# Arker-owned PR checks (SOC 2 change management): build and test what arker-app
+# ships from this repo, on every PR to arker-patches. ArkerHQ/firecracker pins
+# this repo as its micro-http submodule and patches it in through its Cargo.toml
+# [patch] section, so this code is compiled into the production firecracker
+# binary. Upstream's CI (rust-vmm-ci on Buildkite) does not run here.
+name: arker-pr-checks
+on:
+  pull_request:
+    branches: [arker-patches]
+permissions:
+  contents: read
+concurrency:
+  group: arker-pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  build-test:
+    name: build-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
